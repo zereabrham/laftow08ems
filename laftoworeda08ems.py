@@ -2078,7 +2078,8 @@ with tabs[0]:
         default_status_index = 1 if is_auto_late else 0
         status_type = str_lit.selectbox("ሁኔታ", ["በሰዓት ገብቷል/ታለች", "አርፍዷል/አርፍዳለች", "ፈቃድ ነው/ናት"], index=default_status_index)
         if is_auto_late and status_type != "ፈቃድ ነው/ናት":
-            str_lit.warning("⚠️ ከፈረቃ ሰዓት ገደብ ውጭ (ግሬስ ፔሪዮድ ውስጥ) ስለተመዘገቡ ሲስተሙ በራስ-ሰር 'አርፍዷል' ብሎ መዝግቧል!")    else:
+            str_lit.warning("⚠️ ከፈረቃ ሰዓት ገደብ ውጭ (ግሬስ ፔሪዮድ ውስጥ) ስለተመዘገቡ ሲስተሙ በራስ-ሰር 'አርፍዷል' ብሎ መዝግቧል!")  
+        else:
         status_type = str_lit.selectbox("ሁኔታ", ["በሰዓት ገብቷል/ታለች", "ፈቃድ ነው/ናት"], index=0)
         str_lit.info("ℹ️ ከመደበኛ የስራ ቀን ውጭ ስለሆነ 'አርፍዷል/ዘግይቷል' የሚለው መመዘኛ ተሰርዟል፤ በምትኩ የተሰራበት ሰዓት ሙሉ በሙሉ እንደ የትርፍ ሰዓት (Overtime) ይመዘገባል።")
 
