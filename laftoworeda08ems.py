@@ -1940,7 +1940,7 @@ def get_active_employees():
         }
     return emp_dict
 
-str_lit.set_page_config(page_title="የንፋስ ስልክ ላፍቶ ክፍለ ከተማ ወረዳ 08 የሰራተኞች አስተዳደር ሲስተም", layout="wide")
+str_lit.set_page_config(page_title="የንፋስ ስልክ ላፍቶ ክፍለ ከተማ ወረዳ 08 አቴንዳንስ ሲስተም", layout="wide")
 
 str_lit.markdown("""
 <style>
@@ -2074,7 +2074,7 @@ with tabs[0]:
     if is_disabled:
         str_lit.error("❌ የዚህ ፈረቃ ምዝገባ ሰዓት አልፎዋል (Disabled)፤ መመዝገብ አይቻልም!")
 
-   if is_regular_work_day:
+    if is_regular_work_day:
         default_status_index = 1 if is_auto_late else 0
         status_type = str_lit.selectbox("ሁኔታ", ["በሰዓት ገብቷል/ታለች", "አርፍዷል/አርፍዳለች", "ፈቃድ ነው/ናት"], index=default_status_index)
         
