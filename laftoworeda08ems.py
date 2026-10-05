@@ -1999,74 +1999,147 @@ with tabs[0]:
         "ካሊንደር ቀን (Calendar Day)"
     ])
 
-    # ⏰ መግቢያ/ውጣ ሰዓት መምረጫ (ፈረቃ)
-    shift = str_lit.radio("⏰ መግቢያ/ውጣ ሰዓት መምረጫ (ፈረቃ)", [
+    # ================================================================
+    # ⏰ የፈረቃ ምርጫ እና የሰዓት መቆጣጠሪያ
+    # ---------------------------------------------------------------
+    # መደበኛ የስራ ቀን ሲመረጥ ብቻ የ4ቱ ፈረቃዎች ጊዜ ይቆጣጠራል።
+    # ማታ / ቅዳሜ-እሁድ / ካሊንደር ቀን ሲመረጥ ሁሉም ፈረቃዎች አክቲቭ ይሆናሉ።
+    # ሰዓቱ ከኮምፒውተሩ የGregorian ሰዓት ወደ Ethiopian 12-hour clock
+    # በእውነተኛ ጊዜ ይቀየራል።
+    # ================================================================
+
+    SHIFT_OPTIONS = [
         "2:30 (የጠዋት መግቢያ - ከ 2:10 ጀምሮ አክቲቭ)",
-        "6:30 (የእኩለ ቀን መውጫ - ከአርብ 5:30 ጀምሮ አክቲቭ)",
+        "6:30 (የእኩለ ቀን መውጫ - አርብ ከ 5:30 ጀምሮ አክቲቭ)",
         "7:30 (የከሰዓት መግቢያ - ከ 7:30 ጀምሮ አክቲቭ)",
-        "11:30 (የማታ መውጫ - ከ 11:15 ጀምሮ አክቲቭ)"
-    ], horizontal=True)
+        "11:30 (የከሰዓት መውጫ - ከ 11:15 ጀምሮ አክቲቭ)"
+    ]
+
+    shift = str_lit.radio(
+        "⏰ መግቢያ/ውጣ ሰዓት መምረጫ (ፈረቃ)",
+        SHIFT_OPTIONS,
+        horizontal=True
+    )
 
     now = datetime.now()
     greg_hour = now.hour
     greg_minute = now.minute
+    greg_second = now.second
 
-    # የኮምፒውተሩን ሰዓት ወደ ትክክለኛው የኢትዮጵያ ሰዓት (1-12) መቀየር
-    # (በኢትዮጵያ ሰዓት አቆጣጠር ከፈረንጅ ሰዓት ጋር የ 6 ሰዓት ልዩነት አለው)
-    eth_hour = (greg_hour - 6) % 12
+    # ------------------------------------------------
+    # Gregorian -> Ethiopian clock (12-hour clock)
+    # Ethiopian clock is 6 hours behind the Gregorian clock.
+    # Example:
+    #   08:30 Gregorian -> 02:30 Ethiopian
+    #   12:30 Gregorian -> 06:30 Ethiopian
+    #   13:30 Gregorian -> 07:30 Ethiopian
+    #   17:30 Gregorian -> 11:30 Ethiopian
+    # ------------------------------------------------
+    eth_total_minutes = ((greg_hour - 6) % 24) * 60 + greg_minute
+    eth_hour_24 = eth_total_minutes // 60
+    eth_minute = eth_total_minutes % 60
+    eth_hour = eth_hour_24 % 12
     if eth_hour == 0:
         eth_hour = 12
-    eth_minute = greg_minute
+
+    if 0 <= eth_hour_24 < 6:
+        eth_period = "ጠዋት"
+    elif 6 <= eth_hour_24 < 12:
+        eth_period = "ከሰዓት"
+    else:
+        eth_period = "ማታ"
+
+    gregorian_time_text = now.strftime("%Y-%m-%d %H:%M:%S")
+    ethiopian_clock_text = f"{eth_hour}:{eth_minute:02d}:{greg_second:02d} {eth_period}"
+
+    t_col1, t_col2 = str_lit.columns(2)
+    with t_col1:
+        str_lit.info(f"🕐 የፈረንጅ (Gregorian) ሰዓት: **{gregorian_time_text}**")
+    with t_col2:
+        str_lit.success(f"🇪🇹 የኢትዮጵያ ሰዓት: **{ethiopian_clock_text}**")
 
     is_auto_late = False
     is_active_allowed = True
     is_disabled = False
-    
-    # በቀላሉ ቀኑን ለማወቅ (የቀን ተለዋዋጭ ከሌለ በ now.weekday() እንጠቀማለን)
-    is_regular_work_day = True if 'day_type' not in locals() or ("መደበኛ የስራ ቀን" in day_type) else True
+
+    # በተመረጠው Day Type መሠረት መደበኛ የስራ ቀን መሆኑን በትክክል እንወስናለን።
+    is_regular_work_day = day_type == "መደበኛ የስራ ቀን (Day)"
     is_friday = (now.weekday() == 4)
 
     if is_regular_work_day:
+        # ------------------------------------------------------------
+        # መደበኛ የስራ ቀን: 4ቱ ፈረቃዎች በተመረጠው ሰዓት ብቻ ንቁ ናቸው።
+        # ------------------------------------------------------------
         if "2:30" in shift:
-            # ከጠዋቱ 2:10 ጀምሮ አክቲቭ (በፈረንጅ 08:10 አካባቢ)
-            if (eth_hour == 2 and eth_minute < 10) or (eth_hour == 1 and eth_minute < 50): 
+            # 2:10 - 3:00 Ethiopian => 08:10 - 09:00 Gregorian
+            if eth_hour_24 * 60 + eth_minute < (2 * 60 + 10):
                 is_active_allowed = False
-            if (eth_hour > 3) or (eth_hour == 3 and eth_minute > 0): 
+            elif eth_hour_24 * 60 + eth_minute > (3 * 60):
                 is_disabled = True
-            if (eth_hour == 2 and 45 <= eth_minute <= 59) or (eth_hour == 3 and eth_minute == 0): 
+
+            if (eth_hour_24 == 2 and 45 <= eth_minute <= 59) or (
+                eth_hour_24 == 3 and eth_minute == 0
+            ):
                 is_auto_late = True
-                
+
         elif "6:30" in shift:
-            if is_friday:
-                if (eth_hour == 5 and eth_minute < 30) or (eth_hour < 5): 
-                    is_active_allowed = False
-                if (eth_hour > 7) or (eth_hour == 7 and eth_minute > 0): 
-                    is_disabled = True
-                if (eth_hour == 6 and 45 <= eth_minute <= 59) or (eth_hour == 7 and eth_minute == 0): 
-                    is_auto_late = True
-            else:
-                if (eth_hour == 6 and eth_minute < 30) or (eth_hour < 6): 
-                    is_active_allowed = False
-                if (eth_hour > 7) or (eth_hour == 7 and eth_minute > 0): 
-                    is_disabled = True
-                if (eth_hour == 6 and 45 <= eth_minute <= 59) or (eth_hour == 7 and eth_minute == 0): 
-                    is_auto_late = True
-                    
+            # Friday: 5:30 - 7:00 Ethiopian
+            # Other days: 6:30 - 7:00 Ethiopian
+            start_minutes = (5 * 60 + 30) if is_friday else (6 * 60 + 30)
+            current_minutes = eth_hour_24 * 60 + eth_minute
+
+            if current_minutes < start_minutes:
+                is_active_allowed = False
+            elif current_minutes > (7 * 60):
+                is_disabled = True
+
+            if current_minutes >= (6 * 60 + 45) and current_minutes <= (7 * 60):
+                is_auto_late = True
+
         elif "7:30" in shift:
-            if (eth_hour == 7 and eth_minute < 30) or (eth_hour < 7): 
+            # 7:30 - 8:00 Ethiopian => 13:30 - 14:00 Gregorian
+            current_minutes = eth_hour_24 * 60 + eth_minute
+
+            if current_minutes < (7 * 60 + 30):
                 is_active_allowed = False
-            if (eth_hour > 8) or (eth_hour == 8 and eth_minute > 0): 
+            elif current_minutes > (8 * 60):
                 is_disabled = True
-            if (eth_hour == 7 and 45 <= eth_minute <= 59) or (eth_hour == 8 and eth_minute == 0): 
+
+            if current_minutes >= (7 * 60 + 45) and current_minutes <= (8 * 60):
                 is_auto_late = True
-                
+
         elif "11:30" in shift:
-            if (eth_hour == 11 and eth_minute < 15) or (eth_hour < 11): 
+            # 11:15 - 12:00 Ethiopian => 17:15 - 18:00 Gregorian
+            # This is the AFTERNOON EXIT shift, not Night Exit.
+            current_minutes = eth_hour_24 * 60 + eth_minute
+
+            if current_minutes < (11 * 60 + 15):
                 is_active_allowed = False
-            if (eth_hour > 12) or (eth_hour == 12 and eth_minute > 0): 
+            elif current_minutes > (12 * 60):
                 is_disabled = True
-            if (eth_hour == 11 and 45 <= eth_minute <= 59) or (eth_hour == 12 and eth_minute == 0): 
+
+            if current_minutes >= (11 * 60 + 45) and current_minutes <= (12 * 60):
                 is_auto_late = True
+
+    else:
+        # ------------------------------------------------------------
+        # ማታ / ቅዳሜ-እሁድ / ካሊንደር ቀን:
+        # ሁሉም 4 ፈረቃዎች አክቲቭ ናቸው።
+        # ስለዚህ የተመረጠው shift በሰዓት አይዘጋም።
+        # ------------------------------------------------------------
+        is_active_allowed = True
+        is_disabled = False
+        is_auto_late = False
+
+    if not is_active_allowed:
+        str_lit.warning(
+            "⚠️ ትኩረት: ለዚህ ፈረቃ የተፈቀደው የአክቲቭ ሰዓት ገደብ ገና አልደረሰም!"
+        )
+
+    if is_disabled:
+        str_lit.error(
+            "❌ የዚህ ፈረቃ ምዝገባ ሰዓት አልፎዋል (Disabled)፤ መመዝገብ አይቻልም!"
+        )
 
     if not is_active_allowed:
         str_lit.warning("⚠️ ትኩረት: ለዚህ ፈረቃ የተፈቀደው የአክቲቭ ሰዓት ገደብ ገና አልደረሰም!")
@@ -2076,12 +2149,33 @@ with tabs[0]:
 
     if is_regular_work_day:
         default_status_index = 1 if is_auto_late else 0
-        status_type = str_lit.selectbox("ሁኔታ", ["በሰዓት ገብቷል/ታለች", "አርፍዷል/አርፍዳለች", "ፈቃድ ነው/ናት"], index=default_status_index)
-        
+        status_options = [
+            "በሰዓት ገብቷል/ታለች",
+            "አርፍዷል/አርፍዳለች",
+            "ፈቃድ ነው/ናት"
+        ]
+        status_type = str_lit.selectbox(
+            "ሁኔታ",
+            status_options,
+            index=default_status_index
+        )
+
         if is_auto_late and status_type != "ፈቃድ ነው/ናት":
-            str_lit.warning("⚠️ ከፈረቃ ሰዓት ገደብ ውጭ (ግሬስ ፔሪዮድ ውስጥ) ስለተመዘገቡ ሲስተሙ በራስ-ሰር 'አርፍዷል' ብሎ መዝግቧል!")
-        status_type = str_lit.selectbox("ሁኔታ", ["በሰዓት ገብቷል/ታለች", "ፈቃድ ነው/ናት"], index=0)
-        str_lit.info("ℹ️ ከመደበኛ የስራ ቀን ውጭ ስለሆነ 'አርፍዷል/ዘግይቷል' የሚለው መመዘኛ ተሰርዟል፤ በምትኩ የተሰራበት ሰዓት ሙሉ በሙሉ እንደ የትርፍ ሰዓት (Overtime) ይመዘገባል።")
+            str_lit.warning(
+                "⚠️ ከፈረቃ የጊዜ መስኮት ውጭ ስለተመዘገቡ ሁኔታው "
+                "'አርፍዷል/አርፍዳለች' ተብሎ ይመዘገባል።"
+            )
+    else:
+        # ከመደበኛ ቀን ውጭ የሚደረግ ምዝገባ የትርፍ ሰዓት ነው።
+        status_type = str_lit.selectbox(
+            "ሁኔታ",
+            ["በሰዓት ገብቷል/ታለች", "ፈቃድ ነው/ናት"],
+            index=0
+        )
+        str_lit.info(
+            "ℹ️ ይህ የቀን አይነት መደበኛ የስራ ቀን ስላልሆነ፣ "
+            "የተመዘገበው ሰዓት እንደ የትርፍ ሰዓት (Overtime) ይቆጠራል።"
+        )
 
     leave_duration = "-"
     late_reason = "-"
