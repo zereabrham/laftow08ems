@@ -28,6 +28,7 @@ import zipfile
 import hashlib
 import secrets
 from datetime import datetime, timedelta, date, time
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import streamlit as st
@@ -93,6 +94,8 @@ def db():
     conn = sqlite3.connect(DB_NAME, timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    # Return named SQLite rows so database column order can never break the app.
+    conn.row_factory = sqlite3.Row
     return conn
 
 
@@ -113,8 +116,21 @@ def verify_password(stored, password):
     return secrets.compare_digest(stored, password), False
 
 
+ETHIOPIA_TZ = ZoneInfo("Africa/Addis_Ababa")
+
+
+def now_eth():
+    """Return the current real local time in Addis Ababa, independent of Streamlit Cloud server timezone."""
+    return datetime.now(ETHIOPIA_TZ)
+
+
 def get_ethiopian_clock(dt=None):
-    dt = dt or datetime.now()
+    dt = dt or now_eth()
+    # Always normalize an incoming naive/other-zone datetime to Addis Ababa.
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ETHIOPIA_TZ)
+    else:
+        dt = dt.astimezone(ETHIOPIA_TZ)
     h = dt.hour
     m = dt.minute
     s = dt.second
@@ -131,7 +147,8 @@ def get_ethiopian_clock(dt=None):
 
 
 def get_ethiopian_time():
-    return f"{datetime.now():%Y-%m-%d} {get_ethiopian_clock()}"
+    now = now_eth()
+    return f"{now:%Y-%m-%d} {get_ethiopian_clock(now)}"
 
 
 def parse_hm(value):
@@ -140,7 +157,11 @@ def parse_hm(value):
 
 
 def current_greg_minutes(dt=None):
-    dt = dt or datetime.now()
+    dt = dt or now_eth()
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ETHIOPIA_TZ)
+    else:
+        dt = dt.astimezone(ETHIOPIA_TZ)
     return dt.hour * 60 + dt.minute
 
 
@@ -217,6 +238,12 @@ def init_db():
     # Migration for older attendance DBs.
     existing = {r[1] for r in c.execute("PRAGMA table_info(attendance)").fetchall()}
     additions = {
+        "date_str":"TEXT DEFAULT ''", "raw_date":"TEXT DEFAULT ''", "name":"TEXT DEFAULT ''",
+        "emp_id":"TEXT DEFAULT ''", "office":"TEXT DEFAULT ''", "dept":"TEXT DEFAULT ''", "admin":"TEXT DEFAULT ''",
+        "action_type":"TEXT DEFAULT ''", "shift":"TEXT DEFAULT ''", "status":"TEXT DEFAULT ''",
+        "leave_duration":"TEXT DEFAULT '-'", "late_reason":"TEXT DEFAULT '-'", "worked_hours":"REAL DEFAULT 0",
+        "overtime_hours":"REAL DEFAULT 0", "day_type":"TEXT DEFAULT ''", "signature":"TEXT DEFAULT ''",
+        "timestamp":"TEXT DEFAULT ''", "approval_status":"TEXT DEFAULT 'በማጣራት ላይ (Pending)'",
         "checkin_time":"TEXT DEFAULT ''", "checkout_time":"TEXT DEFAULT ''", "gregorian_time":"TEXT DEFAULT ''",
         "eth_time":"TEXT DEFAULT ''", "early_leave":"INTEGER DEFAULT 0", "device_note":"TEXT DEFAULT ''", "approved_by":"TEXT DEFAULT ''"
     }
@@ -275,7 +302,7 @@ def init_db():
         if col not in adm_existing:
             c.execute(f"ALTER TABLE admins ADD COLUMN {col} {typ}")
 
-    now = datetime.now().isoformat(timespec="seconds")
+    now = now_eth().isoformat(timespec="seconds")
     defaults = [
         ("superadmin", "super08password", "ሁሉም ቢሮዎች", "ዋና አድሚን (Super Admin)"),
         ("admin_office1", "pass123office1", "ቢሮ ቁጥር 01 (የሲቪል ምዝገባ እና የነዋሪነት አገልግሎት)", "ቢሮ 01 አድሚን"),
@@ -313,7 +340,7 @@ def attendance_scope(username, office):
 def make_backup():
     os.makedirs(BACKUP_DIR, exist_ok=True)
     if not os.path.exists(DB_NAME): return None
-    name=os.path.join(BACKUP_DIR, f"attendance_{datetime.now():%Y%m%d_%H%M%S}.db")
+    name=os.path.join(BACKUP_DIR, f"attendance_{now_eth():%Y%m%d_%H%M%S}.db")
     shutil.copy2(DB_NAME, name)
     # keep latest 30
     files=sorted(Path(BACKUP_DIR).glob("attendance_*.db"), key=lambda p:p.stat().st_mtime, reverse=True)
@@ -328,10 +355,57 @@ def is_holiday(gdate):
 
 
 def duplicate_record(emp_id, shift_key, action_type, gdate):
+    """Return True when an active/non-rejected duplicate attendance exists."""
     conn=db()
-    row=conn.execute("""SELECT id FROM attendance WHERE emp_id=? AND shift=? AND action_type=?
-                         AND date(raw_date)=? AND approval_status!='ውድቅ ተደርጓል (Rejected)'""", (emp_id, shift_key, action_type, gdate.isoformat())).fetchone()
-    conn.close(); return row is not None
+    row=conn.execute("""SELECT id FROM attendance
+                         WHERE emp_id=? AND shift=? AND action_type=?
+                           AND date(raw_date)=?
+                           AND approval_status!='ውድቅ ተደርጓል (Rejected)'
+                         ORDER BY id DESC LIMIT 1""",
+                     (emp_id, shift_key, action_type, gdate.isoformat())).fetchone()
+    conn.close()
+    return row is not None
+
+
+def get_duplicate_record(emp_id, shift_key, action_type, gdate):
+    """Return existing attendance row for authorized admin correction."""
+    conn = db()
+    row = conn.execute(
+        """SELECT * FROM attendance
+           WHERE emp_id=? AND shift=? AND action_type=?
+             AND date(raw_date)=?
+             AND approval_status!='ውድቅ ተደርጓል (Rejected)'
+           ORDER BY id DESC LIMIT 1""",
+        (emp_id, shift_key, action_type, gdate.isoformat())
+    ).fetchone()
+    conn.close()
+    return row
+
+
+def update_attendance_record(record_id, status_type, leave_duration, late_reason,
+                             worked_hours, overtime_hours, approval_status,
+                             username, signature_name=None):
+    """Update an attendance record and keep an audit trail."""
+    conn=db()
+    if signature_name:
+        conn.execute("""UPDATE attendance
+                       SET status=?, leave_duration=?, late_reason=?,
+                           worked_hours=?, overtime_hours=?, approval_status=?,
+                           signature=?, approved_by=?
+                       WHERE id=?""",
+                     (status_type, leave_duration, late_reason, worked_hours,
+                      overtime_hours, approval_status, signature_name, username, record_id))
+    else:
+        conn.execute("""UPDATE attendance
+                       SET status=?, leave_duration=?, late_reason=?,
+                           worked_hours=?, overtime_hours=?, approval_status=?,
+                           approved_by=?
+                       WHERE id=?""",
+                     (status_type, leave_duration, late_reason, worked_hours,
+                      overtime_hours, approval_status, username, record_id))
+    conn.commit()
+    conn.close()
+    audit(username, f"Corrected attendance record {record_id}")
 
 
 def previous_open_checkin(emp_id, gdate):
@@ -345,7 +419,7 @@ def calculate_status(day_type, shift_key, action_type, now):
         return "በሰዓት ገብቷል/ታለች", False, False, "ይህ ልዩ ቀን ስለሆነ ሁሉም ፈረቃዎች አክቲቭ ናቸው።"
     active, closed, late = shift_window(shift_key, now)
     s=SHIFTS[shift_key]
-    if not active: return "", False, False, f"⏳ {shift_key} ፈረቃ ከ {s['active_from']} Gregorian ጀምሮ አክቲቭ ነው።"
+    if not active: return "", False, False, f"⏳ {shift_key} ፈረቃ ከ {s['active_from']} Gregorian ጀምሮ አክቲቭ ነው። (Africa/Addis_Ababa timezone)"
     if closed: return "", True, False, f"❌ {shift_key} ፈረቃ የመመዝገቢያ ጊዜ አልፏል።"
     if late: return "አርፍዷል/አርፍዳለች", False, True, "⚠️ የፈረቃው የLate ጊዜ ደርሷል።"
     return "በሰዓት ገብቷል/ታለች", False, False, "✅ በፈረቃው ሰዓት ውስጥ ነው።"
@@ -374,7 +448,7 @@ def login_panel():
             ok, hashed=verify_password(row[0],p)
             if ok:
                 if not hashed: conn.execute("UPDATE admins SET password=? WHERE username=?",(hash_password(p),u))
-                conn.execute("UPDATE admins SET last_login=? WHERE username=?",(datetime.now().isoformat(timespec='seconds'),u)); conn.commit(); conn.close()
+                conn.execute("UPDATE admins SET last_login=? WHERE username=?",(now_eth().isoformat(timespec='seconds'),u)); conn.commit(); conn.close()
                 st.session_state.admin_logged=True; st.session_state.admin_username=u; st.session_state.admin_office=row[1]; st.session_state.admin_role=row[2]
                 audit(u,"Admin logged in")
                 st.rerun()
@@ -382,9 +456,24 @@ def login_panel():
         else: conn.close(); st.error("❌ የተሳሳተ Username ወይም Password")
 
 
+def safe_float(value, default=0.0):
+    """Safely convert an attendance numeric value to float."""
+    if value is None:
+        return default
+    try:
+        if isinstance(value, (int, float)):
+            return float(value)
+        text_value = str(value).strip()
+        if not text_value:
+            return default
+        return float(text_value)
+    except (ValueError, TypeError):
+        return default
+
+
 def attendance_tab():
     st.header("✍️ ግባ / ውጣ ምዝገባ")
-    now=datetime.now(); gdate=now.date()
+    now=now_eth(); gdate=now.date()
     st.markdown(f'<div class="clock">🇪🇹 Ethiopian: {get_ethiopian_clock(now)} &nbsp;&nbsp; | &nbsp;&nbsp; 🌍 Gregorian: {now:%Y-%m-%d %H:%M:%S}</div>',unsafe_allow_html=True)
 
     c1,c2,c3=st.columns(3)
@@ -440,14 +529,64 @@ def attendance_tab():
     signature=st.file_uploader("✍️ ፊርማ/ማስረጃ",type=["jpg","jpeg","png","pdf","docx"])
 
     dup=duplicate_record(str(emp['emp_id']),shift_key,action,gdate)
-    if dup: st.error("🚫 ይህ ሰራተኛ በዚህ ቀን/ፈረቃ/ክዋኔ ቀድሞ ተመዝግቧል።")
+    duplicate_row=get_duplicate_record(str(emp['emp_id']),shift_key,action,gdate) if dup else None
+
+    if dup:
+        st.error("🚫 ይህ ሰራተኛ በዚህ ቀን/ፈረቃ/ክዋኔ ቀድሞ ተመዝግቧል።")
+        st.warning("ℹ️ የተደጋጋሚ መዝገብ አይፈጠርም። Admin ከገባ የቀድሞውን መዝገብ ማስተካከል ይችላል።")
+
+        if duplicate_row:
+            with st.expander("📋 ቀድሞ የተመዘገበውን መረጃ አሳይ", expanded=True):
+                d1,d2,d3,d4=st.columns(4)
+                d1.metric("Record ID", str(duplicate_row["id"]))
+                d2.metric("Employee ID", str(duplicate_row["emp_id"]))
+                d3.metric("Shift", str(duplicate_row["shift"]))
+                d4.metric("Action", str(duplicate_row["action_type"]))
+                st.write(f"**ቀን:** {duplicate_row["date_str"]} | **ሁኔታ:** {duplicate_row["status"]} | **Approval:** {duplicate_row["approval_status"]}")
+                st.write(f"**የተመዘገበበት ሰዓት:** {duplicate_row["timestamp"]}")
+
+            if st.session_state.get("admin_logged", False):
+                st.markdown("### ✏️ Admin Attendance Correction")
+                existing_status=str(duplicate_row["status"] or "በሰዓት ገብቷል/ታለች")
+                existing_leave=str(duplicate_row["leave_duration"] or "-")
+                existing_reason=str(duplicate_row["late_reason"] or "-")
+                existing_worked=safe_float(duplicate_row["worked_hours"], 0.0)
+                existing_ot=safe_float(duplicate_row["overtime_hours"], 0.0)
+                existing_approval=str(duplicate_row["approval_status"] or "በማጣራት ላይ (Pending)")
+                edit_status_options=["በሰዓት ገብቷል/ታለች","አርፍዷል/አርፍዳለች","ፈቃድ ነው/ናት"]
+                edit_status=st.selectbox("ሁኔታ አስተካክል",edit_status_options,
+                                        index=edit_status_options.index(existing_status) if existing_status in edit_status_options else 0,
+                                        key=f"edit_status_{duplicate_row["id"]}")
+                e1,e2=st.columns(2)
+                with e1:
+                    edit_worked=st.number_input("የተሰራ ሰዓት",0.0,24.0,existing_worked,0.5,key=f"edit_worked_{duplicate_row["id"]}")
+                with e2:
+                    edit_ot=st.number_input("Overtime ሰዓት",0.0,24.0,existing_ot,0.5,key=f"edit_ot_{duplicate_row["id"]}")
+                edit_reason=st.text_input("የLate/Correction ምክንያት",existing_reason,key=f"edit_reason_{duplicate_row["id"]}")
+                edit_leave=st.text_input("የፈቃድ መረጃ",existing_leave,key=f"edit_leave_{duplicate_row["id"]}")
+                edit_approval=st.selectbox("Approval Status",
+                                           ["በማጣራት ላይ (Pending)","ጸድቋል (Approved)","ውድቅ ተደርጓል (Rejected)","ተመልሷል (Returned)"],
+                                           index=["በማጣራት ላይ (Pending)","ጸድቋል (Approved)","ውድቅ ተደርጓል (Rejected)","ተመልሷል (Returned)"].index(existing_approval) if existing_approval in ["በማጣራት ላይ (Pending)","ጸድቋል (Approved)","ውድቅ ተደርጓል (Rejected)","ተመልሷል (Returned)"] else 0,
+                                           key=f"edit_approval_{duplicate_row["id"]}")
+                if st.button("💾 የቀድሞ መዝገቡን አስተካክል",type="primary",key=f"save_correction_{duplicate_row["id"]}",use_container_width=True):
+                    update_attendance_record(int(duplicate_row["id"]),edit_status,edit_leave,edit_reason,edit_worked,edit_ot,edit_approval,st.session_state.admin_username)
+                    make_backup()
+                    st.success("✅ የAttendance መዝገቡ ተስተካክሏል። አዲስ duplicate መዝገብ አልተፈጠረም።")
+                    st.rerun()
+            else:
+                st.info("🔐 የቀድሞውን መዝገብ ለማስተካከል Admin Login ያድርጉ።")
+
     open_checkin=previous_open_checkin(str(emp['emp_id']),gdate) if "ውጣ" in action else None
     if "ውጣ" in action and not open_checkin: st.warning("⚠️ ለዚህ የውጣ መዝገብ የቀድሞ Check-In መዝገብ አልተገኘም።")
 
     if st.button("💾 ለአድሚን ማጽደቂያ ላክ",type="primary",disabled=(disabled or dup or not signature),use_container_width=True):
-        if not signature: st.error("❌ ፊርማ/ማስረጃ ያስገቡ።"); return
+        if not signature:
+            st.error("❌ ፊርማ/ማስረጃ ያስገቡ።")
+            return
         # Save signature to local folder.
-        os.makedirs("signatures",exist_ok=True); safe=re.sub(r"[^A-Za-z0-9_.-]","_",signature.name); sig_path=os.path.join("signatures",safe)
+        os.makedirs("signatures",exist_ok=True)
+        safe=re.sub(r"[^A-Za-z0-9_.-]","_",signature.name)
+        sig_path=os.path.join("signatures",safe)
         with open(sig_path,"wb") as f: f.write(signature.getbuffer())
         approval="በማጣራት ላይ (Pending)"
         now_iso=now.isoformat(timespec="seconds")
@@ -456,7 +595,8 @@ def attendance_tab():
         conn=db(); conn.execute("""INSERT INTO attendance(date_str,raw_date,name,emp_id,office,dept,admin,action_type,shift,status,leave_duration,late_reason,worked_hours,overtime_hours,day_type,signature,timestamp,approval_status,checkin_time,checkout_time,gregorian_time,eth_time)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(f"{month_val} {day_val}, {year_val} ዓ.ም",now_iso,selected,str(emp['emp_id']),emp['office'],emp['dept'],emp['admin'],action,shift_key,status_type,leave_duration,late_reason,worked,overtime,day_type,safe,get_ethiopian_time(),approval,checkin,checkout,now.strftime("%Y-%m-%d %H:%M:%S"),get_ethiopian_clock(now)))
         conn.commit(); conn.close(); audit("system/user",f"Attendance submitted: {selected}/{action}/{shift_key}")
-        st.success("✅ መዝገቡ ለአድሚን ተልኳል።"); make_backup()
+        st.success("✅ መዝገቡ ለአድሚን ተልኳል።")
+        make_backup()
 
 
 def qr_tab():
@@ -485,7 +625,7 @@ def dashboard_tab(username,office):
     scope,params=attendance_scope(username,office)
     conn=db(); df=pd.read_sql(f"SELECT * FROM attendance WHERE {scope}",conn,params=params); conn.close()
     empdf=get_employees(True)
-    today=datetime.now().date().isoformat()
+    today=now_eth().date().isoformat()
     if not df.empty: df["raw_date"]=pd.to_datetime(df["raw_date"],errors="coerce")
     tdf=df[df.raw_date.dt.date.astype(str)==today] if not df.empty else pd.DataFrame()
     total=len(empdf); present=tdf[tdf.status.str.contains("በሰዓት|አርፍ",na=False)].emp_id.nunique() if not tdf.empty else 0
@@ -505,7 +645,7 @@ def dashboard_tab(username,office):
     st.markdown("### 🤖 Smart Attendance Insights")
     insights=[]
     if not df.empty:
-        late_by=df[df.status.str.contains("አርፍ",na=False)].groupby("name").size().sort_values(ascending=False)
+        late_by=df[df.status.str.contains("አርፍዷል",na=False)].groupby("name").size().sort_values(ascending=False)
         if not late_by.empty: insights.append(f"⚠️ ብዙ ጊዜ የዘገየ: **{late_by.index[0]}** ({int(late_by.iloc[0])} ጊዜ)")
         ot_by=df.groupby("name").overtime_hours.sum().sort_values(ascending=False)
         if not ot_by.empty and ot_by.iloc[0]>0: insights.append(f"⏱️ ከፍተኛ OT: **{ot_by.index[0]}** ({ot_by.iloc[0]:.1f} ሰዓት)")
@@ -573,7 +713,7 @@ def employee_management(username,office):
             n=st.text_input("ሙሉ ስም"); eid=st.text_input("Employee ID"); off=st.selectbox("ቢሮ",allowed); dept=st.text_input("የስራ መደብ"); adm=st.text_input("ኃላፊ",value="ዘረአብርሃም ሙሉጌታ"); phone=st.text_input("ስልክ"); email=st.text_input("Email")
             if st.form_submit_button("➕ መዝግብ"):
                 try:
-                    conn=db(); conn.execute("INSERT INTO employees(emp_id,name,office,admin,dept,phone,email,active,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",(eid,n,off,adm,dept,phone,email,1,datetime.now().isoformat(timespec="seconds"),datetime.now().isoformat(timespec="seconds"))); conn.commit(); conn.close(); audit(username,f"Added employee {eid}"); st.success("ተመዝግቧል"); st.rerun()
+                    conn=db(); conn.execute("INSERT INTO employees(emp_id,name,office,admin,dept,phone,email,active,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",(eid,n,off,adm,dept,phone,email,1,now_eth().isoformat(timespec="seconds"),now_eth().isoformat(timespec="seconds"))); conn.commit(); conn.close(); audit(username,f"Added employee {eid}"); st.success("ተመዝግቧል"); st.rerun()
                 except sqlite3.IntegrityError: st.error("Employee ID ወይም ስም ቀድሞ አለ።")
     edf=get_employees(False)
     if username!="superadmin": edf=edf[edf.office==office]
@@ -583,12 +723,12 @@ def employee_management(username,office):
             with st.form("edit_emp_form"):
                 n=st.text_input("ስም",r.name); eid=st.text_input("ID",r.emp_id); off=st.selectbox("ቢሮ",allowed,index=allowed.index(r.office) if r.office in allowed else 0); dept=st.text_input("ክፍል",r.dept); adm=st.text_input("ኃላፊ",r.admin); phone=st.text_input("ስልክ",r.phone); email=st.text_input("Email",r.email)
                 if st.form_submit_button("💾 Update"):
-                    conn=db(); conn.execute("UPDATE employees SET emp_id=?,name=?,office=?,dept=?,admin=?,phone=?,email=?,updated_at=? WHERE emp_id=?",(eid,n,off,dept,adm,phone,email,datetime.now().isoformat(timespec="seconds"),r.emp_id)); conn.commit(); conn.close(); audit(username,f"Updated employee {r.emp_id}"); st.success("ተስተካክሏል"); st.rerun()
+                    conn=db(); conn.execute("UPDATE employees SET emp_id=?,name=?,office=?,dept=?,admin=?,phone=?,email=?,updated_at=? WHERE emp_id=?",(eid,n,off,dept,adm,phone,email,now_eth().isoformat(timespec="seconds"),r.emp_id)); conn.commit(); conn.close(); audit(username,f"Updated employee {r.emp_id}"); st.success("ተስተካክሏል"); st.rerun()
     with tabs[2]:
         if not edf.empty:
             sel=st.selectbox("ሰራተኛ",edf.name.tolist(),key="deact_emp");
             if st.button("🗑️ Deactivate",type="primary"):
-                eid=edf[edf.name==sel].iloc[0].emp_id; conn=db(); conn.execute("UPDATE employees SET active=0,updated_at=? WHERE emp_id=?",(datetime.now().isoformat(timespec="seconds"),eid)); conn.commit(); conn.close(); audit(username,f"Deactivated employee {eid}"); st.success("ተሰናብቷል/Deactivated"); st.rerun()
+                eid=edf[edf.name==sel].iloc[0].emp_id; conn=db(); conn.execute("UPDATE employees SET active=0,updated_at=? WHERE emp_id=?",(now_eth().isoformat(timespec="seconds"),eid)); conn.commit(); conn.close(); audit(username,f"Deactivated employee {eid}"); st.success("ተሰናብቷል/Deactivated"); st.rerun()
     with tabs[3]: st.dataframe(edf,use_container_width=True)
 
 
@@ -603,7 +743,7 @@ def leave_holiday_tab(username,office):
                 days=(ed-sd).days+1
                 if days<=0: st.error("የቀኑ ምርጫ ስህተት ነው።")
                 else:
-                    conn=db(); conn.execute("INSERT INTO leave_requests(emp_id,employee_name,leave_type,start_date,end_date,days,reason,requested_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)",(eid,emp,lt,sd.isoformat(),ed.isoformat(),days,reason,username,datetime.now().isoformat(timespec="seconds"))); conn.commit(); conn.close(); audit(username,f"Leave requested for {eid}"); st.success("የፈቃድ ጥያቄ ተልኳል")
+                    conn=db(); conn.execute("INSERT INTO leave_requests(emp_id,employee_name,leave_type,start_date,end_date,days,reason,requested_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)",(eid,emp,lt,sd.isoformat(),ed.isoformat(),days,reason,username,now_eth().isoformat(timespec="seconds"))); conn.commit(); conn.close(); audit(username,f"Leave requested for {eid}"); st.success("የፈቃድ ጥያቄ ተልኳል")
         conn=db(); ldf=pd.read_sql("SELECT * FROM leave_requests ORDER BY id DESC",conn); conn.close(); st.dataframe(ldf,use_container_width=True)
         if username=="superadmin" and not ldf.empty:
             lid=st.selectbox("Pending leave",ldf[ldf.status=="Pending"].id.tolist() if (ldf.status=="Pending").any() else [],key="leave_approve")
@@ -642,7 +782,7 @@ def admin_management(username,office):
             u=st.text_input("Username"); p=st.text_input("Password",type="password"); off=st.selectbox("Office",OFFICES); role=st.text_input("Role","ቢሮ አድሚን")
             if st.form_submit_button("➕ Create"):
                 try:
-                    conn=db(); conn.execute("INSERT INTO admins(username,password,office,role,created_at) VALUES(?,?,?,?,?)",(u,hash_password(p),off,role,datetime.now().isoformat(timespec="seconds"))); conn.commit(); conn.close(); audit(username,f"Created admin {u}"); st.success("Admin ተፈጥሯል"); st.rerun()
+                    conn=db(); conn.execute("INSERT INTO admins(username,password,office,role,created_at) VALUES(?,?,?,?,?)",(u,hash_password(p),off,role,now_eth().isoformat(timespec="seconds"))); conn.commit(); conn.close(); audit(username,f"Created admin {u}"); st.success("Admin ተፈጥሯል"); st.rerun()
                 except sqlite3.IntegrityError: st.error("Username አለ።")
         st.dataframe(adf,use_container_width=True)
     with t2:
@@ -691,3 +831,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
