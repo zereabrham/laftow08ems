@@ -76,9 +76,9 @@ OFFICES = [
 # Ethiopian-clock labels. Western/Gregorian equivalents are used internally.
 SHIFTS = {
     "2:30": {"label": "2:30 የጠዋት መግቢያ", "greg": "08:30", "active_from": "08:10", "late_after": "08:45", "close": "09:00", "action": "ግባ (Check-In)"},
-    "6:30": {"label": "6:30 የእኩለ ቀን መውጫ", "greg": "12:30", "active_from": "12:10", "late_after": "12:45", "close": "13:00", "action": "ውጣ (Check-Out)"},
-    "7:30": {"label": "7:30 የከሰዓት መግቢያ", "greg": "13:30", "active_from": "13:10", "late_after": "13:45", "close": "14:00", "action": "ግባ (Check-In)"},
-    "11:30": {"label": "11:30 የከሰዓት መውጫ", "greg": "17:30", "active_from": "17:10", "late_after": "17:45", "close": "18:00", "action": "ውጣ (Check-Out)"},
+    "6:30": {"label": "6:30 የእኩለ ቀን መውጫ", "greg": "12:30", "active_from": "12:25", "late_after": "12:45", "close": "13:00", "action": "ውጣ (Check-Out)"},
+    "7:30": {"label": "7:30 የከሰዓት መግቢያ", "greg": "13:30", "active_from": "13:30", "late_after": "13:45", "close": "14:00", "action": "ግባ (Check-In)"},
+    "11:30": {"label": "11:30 የከሰዓት መውጫ", "greg": "17:30", "active_from": "17:15", "late_after": "17:45", "close": "18:00", "action": "ውጣ (Check-Out)"},
 }
 
 DAY_TYPES = [
