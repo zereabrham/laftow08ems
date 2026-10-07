@@ -76,9 +76,9 @@ OFFICES = [
 # Ethiopian-clock labels. Western/Gregorian equivalents are used internally.
 SHIFTS = {
     "2:30": {"label": "2:30 የጠዋት መግቢያ", "greg": "08:30", "active_from": "08:10", "late_after": "08:45", "close": "09:00", "action": "ግባ (Check-In)"},
-    "6:30": {"label": "6:30 የእኩለ ቀን መውጫ", "greg": "12:30", "active_from": "12:25", "late_after": "12:45", "close": "13:00", "action": "ውጣ (Check-Out)"},
-    "7:30": {"label": "7:30 የከሰዓት መግቢያ", "greg": "13:30", "active_from": "13:30", "late_after": "13:45", "close": "14:00", "action": "ግባ (Check-In)"},
-    "11:30": {"label": "11:30 የከሰዓት መውጫ", "greg": "17:30", "active_from": "17:15", "late_after": "17:45", "close": "18:00", "action": "ውጣ (Check-Out)"},
+    "6:30": {"label": "6:30 የእኩለ ቀን መውጫ", "greg": "12:30", "active_from": "12:10", "late_after": "12:45", "close": "13:00", "action": "ውጣ (Check-Out)"},
+    "7:30": {"label": "7:30 የከሰዓት መግቢያ", "greg": "13:30", "active_from": "13:10", "late_after": "13:45", "close": "14:00", "action": "ግባ (Check-In)"},
+    "11:30": {"label": "11:30 የከሰዓት መውጫ", "greg": "17:30", "active_from": "17:10", "late_after": "17:45", "close": "18:00", "action": "ውጣ (Check-Out)"},
 }
 
 DAY_TYPES = [
@@ -118,6 +118,43 @@ def verify_password(stored, password):
 
 ETHIOPIA_TZ = ZoneInfo("Africa/Addis_Ababa")
 
+
+
+def make_excel_safe_dataframe(dataframe):
+    """Return a copy of a DataFrame that can safely be written to Excel.
+
+    Excel/openpyxl does not support timezone-aware datetime values.
+    This function removes timezone information while preserving the
+    displayed local clock time.
+    """
+    safe_df = dataframe.copy()
+
+    for col in safe_df.columns:
+        series = safe_df[col]
+
+        # Datetime64 columns, including timezone-aware datetime64
+        if pd.api.types.is_datetime64_any_dtype(series):
+            try:
+                if getattr(series.dt, "tz", None) is not None:
+                    safe_df[col] = series.dt.tz_localize(None)
+            except Exception:
+                pass
+
+        # Object columns may contain Python datetime / pandas Timestamp objects.
+        elif series.dtype == "object":
+            def strip_timezone(value):
+                try:
+                    if isinstance(value, pd.Timestamp):
+                        return value.tz_localize(None) if value.tzinfo is not None else value
+                    if isinstance(value, datetime):
+                        return value.replace(tzinfo=None) if value.tzinfo is not None else value
+                except Exception:
+                    pass
+                return value
+
+            safe_df[col] = series.map(strip_timezone)
+
+    return safe_df
 
 def now_eth():
     """Return the current real local time in Addis Ababa, independent of Streamlit Cloud server timezone."""
@@ -659,7 +696,14 @@ def reports_tab(username,office):
     scope,params=attendance_scope(username,office)
     conn=db(); df=pd.read_sql(f"SELECT * FROM attendance WHERE {scope} AND approval_status='ጸድቋል (Approved)' ORDER BY raw_date DESC",conn,params=params); conn.close()
     if df.empty: st.info("የጸደቀ መረጃ የለም፤ አድሚኑ ከፈቀደ በኋላ ይታያል።"); return
+    # SQLite stores raw_date as an ISO string containing the Ethiopia (+03:00)
+    # timezone. Pandas therefore creates a timezone-aware datetime here.
+    # Keep the local Addis Ababa clock time, but remove timezone metadata
+    # before exporting to Excel because Excel/openpyxl does not support it.
     df["raw_date"]=pd.to_datetime(df["raw_date"],errors="coerce")
+    if getattr(df["raw_date"].dt, "tz", None) is not None:
+        df["raw_date"]=df["raw_date"].dt.tz_localize(None)
+
     f1,f2,f3=st.columns(3)
     with f1: selected_office=st.selectbox("ቢሮ",["ሁሉም"]+sorted(df.office.dropna().unique().tolist()))
     with f2: start=st.date_input("ከቀን",value=df.raw_date.min().date())
@@ -668,10 +712,15 @@ def reports_tab(username,office):
     df=df[(df.raw_date.dt.date>=start)&(df.raw_date.dt.date<=end)]
     summary=df.groupby(["name","emp_id","office"]).agg(Total_Worked_Hours=("worked_hours","sum"),Total_Overtime=("overtime_hours","sum"),Records=("id","count")).reset_index()
     st.dataframe(summary,use_container_width=True)
+    # Final safety pass: remove timezone information from any datetime
+    # values/columns before sending the DataFrame to openpyxl.
+    excel_df=make_excel_safe_dataframe(df)
+    excel_summary=make_excel_safe_dataframe(summary)
+
     out=io.BytesIO()
     with pd.ExcelWriter(out,engine="openpyxl") as writer:
-        df.to_excel(writer,index=False,sheet_name="Attendance")
-        summary.to_excel(writer,index=False,sheet_name="Employee_Summary")
+        excel_df.to_excel(writer,index=False,sheet_name="Attendance")
+        excel_summary.to_excel(writer,index=False,sheet_name="Employee_Summary")
     excel=out.getvalue()
     pdfbuf=io.BytesIO(); doc=SimpleDocTemplate(pdfbuf,pagesize=landscape(letter)); styles=getSampleStyleSheet(); story=[Paragraph("Woreda 08 Attendance Report",styles["Title"]),Spacer(1,8),Paragraph(f"Period: {start} - {end} | Office: {selected_office}",styles["Normal"]),Spacer(1,8)]
     p=summary.copy(); p.columns=["Employee","ID","Office","Worked Hours","Overtime","Records"]; data=[list(p.columns)]+[[str(x) for x in r] for r in p.itertuples(index=False,name=None)]; table=Table(data,repeatRows=1); table.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#2d6a4f")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("GRID",(0,0),(-1,-1),.4,colors.grey),("FONTSIZE",(0,0),(-1,-1),7)])); story.append(table); doc.build(story); pdf=pdfbuf.getvalue()
