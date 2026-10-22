@@ -509,7 +509,7 @@ def safe_float(value, default=0.0):
 
 
 def attendance_tab():
-    st.header("✍️ ግባ / ውጣ ምዝገባ")
+    st.header("✍️ መግቢያ / መውጫ ምዝገባ")
     now=now_eth(); gdate=now.date()
     st.markdown(f'<div class="clock">🇪🇹 Ethiopian: {get_ethiopian_clock(now)} &nbsp;&nbsp; | &nbsp;&nbsp; 🌍 Gregorian: {now:%Y-%m-%d %H:%M:%S}</div>',unsafe_allow_html=True)
 
@@ -853,7 +853,7 @@ def main():
     if "admin_logged" not in st.session_state: st.session_state.admin_logged=False
     st.title(APP_TITLE)
     st.caption("V4.0 Professional — 4 Shift • QR • Dashboard • Leave • Reports • Security • Backup")
-    tabs=st.tabs(["✍️ ግባ/ውጣ","🔲 QR","📊 Dashboard","📥 Approvals","📈 Reports","👥 Employees","🏖️ Leave/Holiday","💬 Messages","⚙️ Security"])
+    tabs=st.tabs(["✍️ መግቢያ/መውጫ","🔲 QR","📊 Dashboard","📥 Approvals","📈 Reports","👥 Employees","🏖️ Leave/Holiday","💬 Messages","⚙️ Security"])
     with tabs[0]: attendance_tab()
     with tabs[1]: qr_tab()
     if not st.session_state.admin_logged:
