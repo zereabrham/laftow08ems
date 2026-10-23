@@ -536,7 +536,7 @@ def attendance_tab():
         st.info("ℹ️ ማታ / ቅዳሜ-እሁድ / ካሊንደር ቀን ሲመረጥ ሁሉም 4 ፈረቃዎች የሰዓት ገደብ ሳይኖራቸው አክቲቭ ናቸው።")
 
     expected_action=SHIFTS[shift_key]["action"]
-    action=st.radio("ክዋኔ",["ግባ (Check-In)","ውጣ (Check-Out)"],index=0 if "ግባ" in expected_action else 1,horizontal=True,key="action_type")
+    action=st.radio("ክዋኔ",["መግቢያ (Check-In)","መውጫ (Check-Out)"],index=0 if "ግባ" in expected_action else 1,horizontal=True,key="action_type")
     if action != expected_action and is_regular:
         st.warning(f"ℹ️ {shift_key} በተፈጥሮ {expected_action} ነው፤ የመረጡት {action} ነው።")
 
@@ -613,8 +613,8 @@ def attendance_tab():
             else:
                 st.info("🔐 የቀድሞውን መዝገብ ለማስተካከል Admin Login ያድርጉ።")
 
-    open_checkin=previous_open_checkin(str(emp['emp_id']),gdate) if "ውጣ" in action else None
-    if "ውጣ" in action and not open_checkin: st.warning("⚠️ ለዚህ የውጣ መዝገብ የቀድሞ Check-In መዝገብ አልተገኘም።")
+    open_checkin=previous_open_checkin(str(emp['emp_id']),gdate) if "መውጫ" in action else None
+    if "መውጫ" in action and not open_checkin: st.warning("⚠️ ለዚህ የመውጫ መዝገብ የቀድሞ Check-In መዝገብ አልተገኘም።")
 
     if st.button("💾 ለአድሚን ማጽደቂያ ላክ",type="primary",disabled=(disabled or dup or not signature),use_container_width=True):
         if not signature:
@@ -627,8 +627,8 @@ def attendance_tab():
         with open(sig_path,"wb") as f: f.write(signature.getbuffer())
         approval="በማጣራት ላይ (Pending)"
         now_iso=now.isoformat(timespec="seconds")
-        checkin=now_iso if "ግባ" in action else ""
-        checkout=now_iso if "ውጣ" in action else ""
+        checkin=now_iso if "መግቢያ" in action else ""
+        checkout=now_iso if "መውጫ" in action else ""
         conn=db(); conn.execute("""INSERT INTO attendance(date_str,raw_date,name,emp_id,office,dept,admin,action_type,shift,status,leave_duration,late_reason,worked_hours,overtime_hours,day_type,signature,timestamp,approval_status,checkin_time,checkout_time,gregorian_time,eth_time)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(f"{month_val} {day_val}, {year_val} ዓ.ም",now_iso,selected,str(emp['emp_id']),emp['office'],emp['dept'],emp['admin'],action,shift_key,status_type,leave_duration,late_reason,worked,overtime,day_type,safe,get_ethiopian_time(),approval,checkin,checkout,now.strftime("%Y-%m-%d %H:%M:%S"),get_ethiopian_clock(now)))
         conn.commit(); conn.close(); audit("system/user",f"Attendance submitted: {selected}/{action}/{shift_key}")
